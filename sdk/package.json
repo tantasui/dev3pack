@@ -1,0 +1,13 @@
+{
+  "name": "@crowdcast/sdk",
+  "version": "0.1.0",
+  "description": "CrowdCast attention market SDK",
+  "main": "index.ts",
+  "types": "index.ts",
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
+    "@solana/wallet-adapter-react": "^0.15.35",
+    "@solana/web3.js": "^1.87.6",
+    "react": "^18.0.0"
+  }
+}

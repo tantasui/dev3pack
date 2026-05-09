@@ -1,0 +1,27 @@
+{
+  "name": "crowdcast",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:program": "anchor build",
+    "test:program": "anchor test",
+    "dev": "cd app && yarn dev",
+    "build:app": "cd app && yarn build",
+    "airdrop": "ts-node scripts/airdrop.ts"
+  },
+  "devDependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
+    "@types/bn.js": "^5.1.1",
+    "@types/chai": "^4.3.5",
+    "@types/mocha": "^10.0.1",
+    "@types/node": "^18.0.0",
+    "chai": "^4.3.7",
+    "mocha": "^10.2.0",
+    "ts-mocha": "^10.0.0",
+    "ts-node": "^10.9.1",
+    "typescript": "^5.0.0"
+  },
+  "dependencies": {
+    "@solana/web3.js": "^1.87.6"
+  }
+}
