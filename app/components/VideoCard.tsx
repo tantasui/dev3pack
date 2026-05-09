@@ -4,7 +4,7 @@ import Link from "next/link";
 import { useWallet } from "@solana/wallet-adapter-react";
 import { VideoEntry } from "../lib/mockData";
 import { useMarket } from "../hooks/useMarket";
-import { createMarket, getMarketPda } from "../lib/program";
+import { createMarket } from "../lib/program";
 import { useConnection } from "@solana/wallet-adapter-react";
 import MarketOverlay from "./MarketOverlay";
 
@@ -13,13 +13,13 @@ interface Props {
   isActive: boolean;
 }
 
-function useCountdown(endTime: number | null): string {
+function useCountdown(endTimeSec: number | null): string {
   const [display, setDisplay] = useState("--:--");
 
   useEffect(() => {
-    if (!endTime) return;
+    if (!endTimeSec) return;
     const tick = () => {
-      const diff = endTime - Math.floor(Date.now() / 1000);
+      const diff = endTimeSec - Math.floor(Date.now() / 1000);
       if (diff <= 0) {
         setDisplay("ENDED");
         return;
@@ -31,7 +31,7 @@ function useCountdown(endTime: number | null): string {
     tick();
     const id = setInterval(tick, 1000);
     return () => clearInterval(id);
-  }, [endTime]);
+  }, [endTimeSec]);
 
   return display;
 }
@@ -42,20 +42,34 @@ const VideoCard: FC<Props> = ({ video, isActive }) => {
   const cardRef = useRef<HTMLDivElement>(null);
   const [creating, setCreating] = useState(false);
 
-  const { market, userBet, odds, loading, placeBet, claimWinnings, resolveMarket } =
-    useMarket(video.id);
+  const {
+    market,
+    userBet,
+    odds,
+    totalCommittedSOL,
+    bettingClosed,
+    revealWindowClosed,
+    canReveal,
+    loading,
+    commitBet,
+    revealBet,
+    claimWinnings,
+    resolveMarket,
+  } = useMarket(video.id);
 
   const countdown = useCountdown(market?.endTime?.toNumber() ?? null);
 
   const isAuthority =
-    wallet.publicKey?.toBase58() === market?.authority?.toBase58();
+    !!wallet.publicKey &&
+    !!market?.authority &&
+    wallet.publicKey.toBase58() === market.authority.toBase58();
 
   // Auto-create market on devnet when card becomes active
   useEffect(() => {
     if (!isActive || !wallet.publicKey || market || creating) return;
     setCreating(true);
     createMarket(connection, wallet, video.id, video.title, video.duration)
-      .catch(() => {}) // ignore if already exists
+      .catch(() => {}) // already exists or network issue — swallow
       .finally(() => setCreating(false));
   }, [isActive, wallet.publicKey, market, creating, connection, video]);
 
@@ -70,14 +84,10 @@ const VideoCard: FC<Props> = ({ video, isActive }) => {
         className="relative w-full max-w-[390px] h-full overflow-hidden"
         style={{ background: video.gradient }}
       >
-        {/* Animated gradient overlay for visual interest */}
+        {/* Animated gradient overlays */}
         <motion.div
           className="absolute inset-0"
-          animate={
-            isActive
-              ? { opacity: [0.3, 0.6, 0.3] }
-              : { opacity: 0.3 }
-          }
+          animate={isActive ? { opacity: [0.3, 0.6, 0.3] } : { opacity: 0.3 }}
           transition={{ duration: 4, repeat: Infinity, ease: "easeInOut" }}
           style={{
             background:
@@ -86,11 +96,7 @@ const VideoCard: FC<Props> = ({ video, isActive }) => {
         />
         <motion.div
           className="absolute inset-0"
-          animate={
-            isActive
-              ? { opacity: [0.2, 0.5, 0.2] }
-              : { opacity: 0.2 }
-          }
+          animate={isActive ? { opacity: [0.2, 0.5, 0.2] } : { opacity: 0.2 }}
           transition={{ duration: 5, repeat: Infinity, ease: "easeInOut", delay: 1 }}
           style={{
             background:
@@ -98,7 +104,7 @@ const VideoCard: FC<Props> = ({ video, isActive }) => {
           }}
         />
 
-        {/* Content title (mock "video") */}
+        {/* Content title */}
         <div className="absolute inset-0 flex items-center justify-center px-8">
           <motion.h2
             initial={{ opacity: 0, y: 20 }}
@@ -110,14 +116,15 @@ const VideoCard: FC<Props> = ({ video, isActive }) => {
           </motion.h2>
         </div>
 
-        {/* Bottom info strip */}
-        <div className="absolute bottom-0 left-0 right-0 p-4 pb-6"
+        {/* Bottom strip */}
+        <div
+          className="absolute bottom-0 left-0 right-0 p-4 pb-6"
           style={{
             background: "linear-gradient(to top, rgba(0,0,0,0.85) 0%, transparent 100%)",
           }}
         >
           <div className="flex items-end gap-3">
-            {/* Left: creator + timer */}
+            {/* Left: creator + countdown */}
             <div className="flex-1 min-w-0">
               <Link href={`/creator/${encodeURIComponent(video.creator)}`}>
                 <span className="text-white font-bold text-base hover:text-purple-300 transition-colors cursor-pointer">
@@ -143,13 +150,18 @@ const VideoCard: FC<Props> = ({ video, isActive }) => {
             </div>
 
             {/* Right: market overlay */}
-            <div className="w-[160px] flex-shrink-0">
+            <div className="w-[165px] flex-shrink-0">
               <MarketOverlay
                 market={market}
                 userBet={userBet}
                 odds={odds}
+                totalCommittedSOL={totalCommittedSOL}
+                bettingClosed={bettingClosed}
+                revealWindowClosed={revealWindowClosed}
+                canReveal={canReveal}
                 loading={loading}
-                onPlaceBet={placeBet}
+                onCommitBet={commitBet}
+                onReveal={revealBet}
                 onClaim={claimWinnings}
                 onResolve={resolveMarket}
                 isAuthority={isAuthority}
