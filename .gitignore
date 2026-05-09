@@ -1,0 +1,7 @@
+target/
+.anchor/
+node_modules/
+app/.next/
+app/node_modules/
+sdk/node_modules/
+*.env.local
