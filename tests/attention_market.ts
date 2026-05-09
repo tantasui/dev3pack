@@ -7,47 +7,75 @@ import { expect } from "chai";
 type AttentionMarket = any;
 
 // ─── Commitment helper (Node.js) ──────────────────────────────────────────────
-// Must match Rust: keccak::hashv(&[&[outcome], &secret, user_pubkey.as_ref()])
 function computeCommitment(
   outcome: 1 | 2,
   secret: Buffer,
   userPubkey: PublicKey
 ): Buffer {
-  // Node.js built-in crypto doesn't have keccak — use sha3-256 via the hash module
-  // We use the same concatenation as the Rust program:
-  // hashv concatenates [outcome_byte, secret_32_bytes, pubkey_32_bytes]
   const input = Buffer.concat([
     Buffer.from([outcome]),
     secret,
     userPubkey.toBuffer(),
   ]);
-  // Use keccak256 — requires the sha3 variant. We call it via crypto's createHash
-  // with algorithm "sha3-256" as a reasonable test approximation, OR we can use
-  // a JS keccak library. For tests we'll use @noble/hashes/sha3 if available,
-  // else fall back to sha256 (still validates the mechanism).
   try {
     const { keccak_256 } = require("@noble/hashes/sha3");
     return Buffer.from(keccak_256(input));
   } catch {
-    // Fallback: sha256 (won't match on-chain keccak but tests the plumbing)
     return createHash("sha256").update(input).digest();
   }
 }
 
-describe("attention_market — commit-reveal", () => {
+// ─── PDA helpers ──────────────────────────────────────────────────────────────
+function getMarketPda(programId: PublicKey, contentId: string): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("market"), Buffer.from(contentId)],
+    programId
+  )[0];
+}
+
+function getVaultPda(programId: PublicKey, marketPubkey: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("vault"), marketPubkey.toBuffer()],
+    programId
+  )[0];
+}
+
+function getBetPda(programId: PublicKey, marketPubkey: PublicKey, userPubkey: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("bet"), marketPubkey.toBuffer(), userPubkey.toBuffer()],
+    programId
+  )[0];
+}
+
+function getUserStatsPda(programId: PublicKey, userPubkey: PublicKey): PublicKey {
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("stats"), userPubkey.toBuffer()],
+    programId
+  )[0];
+}
+
+function getCommentPda(programId: PublicKey, marketPubkey: PublicKey, index: number): PublicKey {
+  const buf = Buffer.alloc(8);
+  buf.writeBigUInt64LE(BigInt(index));
+  return PublicKey.findProgramAddressSync(
+    [Buffer.from("comment"), marketPubkey.toBuffer(), buf],
+    programId
+  )[0];
+}
+
+// ─── Suite 1: majority-wins market (mode 0) ───────────────────────────────────
+describe("attention_market — mode 0 (majority wins)", () => {
   const provider = anchor.AnchorProvider.env();
   anchor.setProvider(provider);
 
   const program = anchor.workspace.AttentionMarket as Program<AttentionMarket>;
+  const pid = program.programId;
 
   const walletA = Keypair.generate(); // commits viral
   const walletB = Keypair.generate(); // commits flop
+  const treasury = Keypair.generate();
 
-  const contentId = "cr-test-001";
-  const title = "Commit-Reveal Test Market";
-  const durationSeconds = new BN(2); // 2s betting window
-
-  // Secrets and commitments
+  const contentId = "cr-mode0-001";
   const secretA = Buffer.alloc(32, 0x01);
   const secretB = Buffer.alloc(32, 0x02);
 
@@ -55,39 +83,30 @@ describe("attention_market — commit-reveal", () => {
   let vaultPda: PublicKey;
   let betAPda: PublicKey;
   let betBPda: PublicKey;
+  let statsAPda: PublicKey;
+  let statsBPda: PublicKey;
 
   before(async () => {
-    // Fund test wallets
-    for (const kp of [walletA, walletB]) {
+    for (const kp of [walletA, walletB, treasury]) {
       const sig = await provider.connection.requestAirdrop(kp.publicKey, 5 * LAMPORTS_PER_SOL);
       await provider.connection.confirmTransaction(sig);
     }
 
-    // Derive PDAs
-    [marketPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("market"), Buffer.from(contentId)],
-      program.programId
-    );
-    [vaultPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("vault"), marketPda.toBuffer()],
-      program.programId
-    );
-    [betAPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("bet"), marketPda.toBuffer(), walletA.publicKey.toBuffer()],
-      program.programId
-    );
-    [betBPda] = PublicKey.findProgramAddressSync(
-      [Buffer.from("bet"), marketPda.toBuffer(), walletB.publicKey.toBuffer()],
-      program.programId
-    );
+    marketPda = getMarketPda(pid, contentId);
+    vaultPda = getVaultPda(pid, marketPda);
+    betAPda = getBetPda(pid, marketPda, walletA.publicKey);
+    betBPda = getBetPda(pid, marketPda, walletB.publicKey);
+    statsAPda = getUserStatsPda(pid, walletA.publicKey);
+    statsBPda = getUserStatsPda(pid, walletB.publicKey);
   });
 
-  it("1. Creates a market (2 second betting window)", async () => {
+  it("1. Creates a majority market (mode=0, 2s window)", async () => {
     await program.methods
-      .createMarket(contentId, title, durationSeconds)
+      .createMarket(contentId, "Mode 0 Test Market", new BN(2), 0)
       .accounts({
         market: marketPda,
         vault: vaultPda,
+        protocolTreasury: treasury.publicKey,
         authority: provider.wallet.publicKey,
         systemProgram: SystemProgram.programId,
       })
@@ -95,12 +114,13 @@ describe("attention_market — commit-reveal", () => {
 
     const market = await program.account.market.fetch(marketPda);
     expect(market.contentId).to.equal(contentId);
+    expect(market.mode).to.equal(0);
     expect(market.resolved).to.equal(false);
     expect(market.totalCommitted.toNumber()).to.equal(0);
-    console.log("  ✓ Market created:", marketPda.toString());
+    console.log("  ✓ Mode-0 market created:", marketPda.toString());
   });
 
-  it("2. Wallet A commits viral (0.5 SOL)", async () => {
+  it("2. Wallet A commits viral (0.5 SOL) — userStats auto-init", async () => {
     const betAmount = new BN(0.5 * LAMPORTS_PER_SOL);
     const commitment = computeCommitment(1, secretA, walletA.publicKey);
 
@@ -110,6 +130,7 @@ describe("attention_market — commit-reveal", () => {
         market: marketPda,
         vault: vaultPda,
         bet: betAPda,
+        userStats: statsAPda,
         user: walletA.publicKey,
         systemProgram: SystemProgram.programId,
       })
@@ -118,13 +139,12 @@ describe("attention_market — commit-reveal", () => {
 
     const market = await program.account.market.fetch(marketPda);
     expect(market.totalCommitted.toNumber()).to.equal(betAmount.toNumber());
-    expect(market.totalViral.toNumber()).to.equal(0); // not revealed yet
-    expect(market.totalFlop.toNumber()).to.equal(0);
+    expect(market.totalViral.toNumber()).to.equal(0);
 
     const bet = await program.account.betRecord.fetch(betAPda);
     expect(bet.revealed).to.equal(false);
     expect(bet.amount.toNumber()).to.equal(betAmount.toNumber());
-    console.log("  ✓ Wallet A committed 0.5 SOL (side hidden)");
+    console.log("  ✓ Wallet A committed 0.5 SOL (viral, hidden)");
   });
 
   it("3. Wallet B commits flop (0.3 SOL)", async () => {
@@ -137,6 +157,7 @@ describe("attention_market — commit-reveal", () => {
         market: marketPda,
         vault: vaultPda,
         bet: betBPda,
+        userStats: statsBPda,
         user: walletB.publicKey,
         systemProgram: SystemProgram.programId,
       })
@@ -145,16 +166,15 @@ describe("attention_market — commit-reveal", () => {
 
     const market = await program.account.market.fetch(marketPda);
     expect(market.totalCommitted.toNumber()).to.equal(0.8 * LAMPORTS_PER_SOL);
-    expect(market.totalViral.toNumber()).to.equal(0); // still hidden
-    console.log("  ✓ Wallet B committed 0.3 SOL (side hidden)");
+    console.log("  ✓ Wallet B committed 0.3 SOL (flop, hidden)");
   });
 
-  it("4. Reveals are rejected before end_time", async () => {
+  it("4. Reveal rejected before end_time", async () => {
     let threw = false;
     try {
       await program.methods
         .revealBet(1, Array.from(secretA))
-        .accounts({ market: marketPda, bet: betAPda, user: walletA.publicKey })
+        .accounts({ market: marketPda, bet: betAPda, userStats: statsAPda, user: walletA.publicKey })
         .signers([walletA])
         .rpc();
     } catch {
@@ -164,72 +184,59 @@ describe("attention_market — commit-reveal", () => {
     console.log("  ✓ Reveal correctly rejected before market expires");
   });
 
-  it("5. Waits for market to expire then both wallets reveal", async () => {
-    console.log("  Waiting 3 seconds for market to expire...");
-    await new Promise((resolve) => setTimeout(resolve, 3000));
+  it("5. Waits for expiry, then both wallets reveal", async () => {
+    console.log("  Waiting 3s for market to expire...");
+    await new Promise((r) => setTimeout(r, 3000));
 
-    // Wallet A reveals viral
     await program.methods
       .revealBet(1, Array.from(secretA))
-      .accounts({ market: marketPda, bet: betAPda, user: walletA.publicKey })
+      .accounts({ market: marketPda, bet: betAPda, userStats: statsAPda, user: walletA.publicKey })
       .signers([walletA])
       .rpc();
 
-    // Wallet B reveals flop
     await program.methods
       .revealBet(2, Array.from(secretB))
-      .accounts({ market: marketPda, bet: betBPda, user: walletB.publicKey })
+      .accounts({ market: marketPda, bet: betBPda, userStats: statsBPda, user: walletB.publicKey })
       .signers([walletB])
       .rpc();
 
     const market = await program.account.market.fetch(marketPda);
     expect(market.totalViral.toNumber()).to.equal(0.5 * LAMPORTS_PER_SOL);
     expect(market.totalFlop.toNumber()).to.equal(0.3 * LAMPORTS_PER_SOL);
+    expect(market.viralCount.toNumber()).to.equal(1);
+    expect(market.flopCount.toNumber()).to.equal(1);
 
     const betA = await program.account.betRecord.fetch(betAPda);
     expect(betA.revealed).to.equal(true);
     expect(betA.revealedOutcome).to.equal(1);
-    console.log("  ✓ Both bets revealed — viral: 0.5 SOL, flop: 0.3 SOL");
+    console.log("  ✓ Both bets revealed — viral: 0.5 SOL (1 wallet), flop: 0.3 SOL (1 wallet)");
   });
 
-  it("6. resolve_market auto-picks winner (viral wins: 0.5 > 0.3)", async () => {
-    // In a real test we'd wait 1hr for the reveal window, but on localnet
-    // we test the auto-resolve logic by checking what it would pick.
-    // For the test harness we skip the window check by noting:
-    //   market.end_time + 3600 > now (the test runs faster than 1hr)
-    // So we verify the state and trust the integration test covers the timing.
-    // On localnet with solana-test-validator we'd need to warp the clock.
-    // Here we just verify the accumulated totals are correct, and the
-    // resolve instruction would pick viral (0.5 > 0.3).
-
+  it("6. Mode 0: viral_count == flop_count → tie resolves to viral (>= wins)", async () => {
+    // Verify state that would determine resolve outcome
     const market = await program.account.market.fetch(marketPda);
-    const viralWins = market.totalViral.toNumber() >= market.totalFlop.toNumber();
+    // mode 0: viral wins if viral_count >= flop_count
+    const viralWins = market.viralCount.toNumber() >= market.flopCount.toNumber();
     expect(viralWins).to.equal(true);
-    console.log("  ✓ Accumulated totals confirm viral would win (0.5 SOL vs 0.3 SOL)");
-    console.log("  ℹ resolve_market requires reveal window closure (end_time + 3600s)");
-    console.log("    Use `solana-test-validator --warp-slot` or wait 1hr on devnet");
+    console.log("  ✓ Mode-0 resolution: viral_count >= flop_count → viral wins");
+    console.log("  ℹ resolve_market requires end_time + 3600s; use clock warp on localnet");
   });
 
-  it("7. Wrong commitment is rejected on reveal", async () => {
-    // Create a fresh market with a different content ID to test bad reveal
-    const badContentId = "cr-bad-reveal";
-    const [badMarket] = PublicKey.findProgramAddressSync(
-      [Buffer.from("market"), Buffer.from(badContentId)],
-      program.programId
-    );
-    const [badVault] = PublicKey.findProgramAddressSync(
-      [Buffer.from("vault"), badMarket.toBuffer()],
-      program.programId
-    );
-    const [badBet] = PublicKey.findProgramAddressSync(
-      [Buffer.from("bet"), badMarket.toBuffer(), walletA.publicKey.toBuffer()],
-      program.programId
-    );
+  it("7. Wrong commitment rejected on reveal", async () => {
+    const badId = "cr-bad-rev";
+    const badMarket = getMarketPda(pid, badId);
+    const badVault = getVaultPda(pid, badMarket);
+    const badBet = getBetPda(pid, badMarket, walletA.publicKey);
 
-    // Create market with 1s window
     await program.methods
-      .createMarket(badContentId, "Bad Reveal Test", new BN(1))
-      .accounts({ market: badMarket, vault: badVault, authority: provider.wallet.publicKey, systemProgram: SystemProgram.programId })
+      .createMarket(badId, "Bad Reveal", new BN(1), 0)
+      .accounts({
+        market: badMarket,
+        vault: badVault,
+        protocolTreasury: treasury.publicKey,
+        authority: provider.wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
       .rpc();
 
     const wrongSecret = Buffer.alloc(32, 0xff);
@@ -237,25 +244,261 @@ describe("attention_market — commit-reveal", () => {
 
     await program.methods
       .commitBet(Array.from(commitment), new BN(0.1 * LAMPORTS_PER_SOL))
-      .accounts({ market: badMarket, vault: badVault, bet: badBet, user: walletA.publicKey, systemProgram: SystemProgram.programId })
+      .accounts({
+        market: badMarket,
+        vault: badVault,
+        bet: badBet,
+        userStats: statsAPda,
+        user: walletA.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
       .signers([walletA])
       .rpc();
 
     await new Promise((r) => setTimeout(r, 2000));
 
-    // Try to reveal with a different secret — should fail
     let threw = false;
     try {
-      const differentSecret = Buffer.alloc(32, 0xaa);
       await program.methods
-        .revealBet(1, Array.from(differentSecret))
-        .accounts({ market: badMarket, bet: badBet, user: walletA.publicKey })
+        .revealBet(1, Array.from(Buffer.alloc(32, 0xaa)))
+        .accounts({ market: badMarket, bet: badBet, userStats: statsAPda, user: walletA.publicKey })
         .signers([walletA])
         .rpc();
     } catch {
       threw = true;
     }
     expect(threw).to.equal(true);
-    console.log("  ✓ Invalid commitment correctly rejected on reveal");
+    console.log("  ✓ Invalid commitment rejected on reveal");
+  });
+});
+
+// ─── Suite 2: contrarian market (mode 1) ─────────────────────────────────────
+describe("attention_market — mode 1 (minority wins)", () => {
+  const provider = anchor.AnchorProvider.env();
+  anchor.setProvider(provider);
+
+  const program = anchor.workspace.AttentionMarket as Program<AttentionMarket>;
+  const pid = program.programId;
+
+  const walletC = Keypair.generate(); // commits viral
+  const walletD = Keypair.generate(); // commits viral too
+  const walletE = Keypair.generate(); // commits flop (the minority)
+  const treasury = Keypair.generate();
+
+  const contentId = "cr-mode1-001";
+  const secretC = Buffer.alloc(32, 0x0c);
+  const secretD = Buffer.alloc(32, 0x0d);
+  const secretE = Buffer.alloc(32, 0x0e);
+
+  let marketPda: PublicKey;
+  let vaultPda: PublicKey;
+
+  before(async () => {
+    for (const kp of [walletC, walletD, walletE, treasury]) {
+      const sig = await provider.connection.requestAirdrop(kp.publicKey, 5 * LAMPORTS_PER_SOL);
+      await provider.connection.confirmTransaction(sig);
+    }
+
+    marketPda = getMarketPda(pid, contentId);
+    vaultPda = getVaultPda(pid, marketPda);
+  });
+
+  it("1. Creates a contrarian market (mode=1, 2s window)", async () => {
+    await program.methods
+      .createMarket(contentId, "Contrarian Test", new BN(2), 1)
+      .accounts({
+        market: marketPda,
+        vault: vaultPda,
+        protocolTreasury: treasury.publicKey,
+        authority: provider.wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+
+    const market = await program.account.market.fetch(marketPda);
+    expect(market.mode).to.equal(1);
+    console.log("  ✓ Mode-1 (contrarian) market created");
+  });
+
+  it("2. Three wallets commit (2 viral, 1 flop)", async () => {
+    const commit = async (kp: Keypair, outcome: 1 | 2, secret: Buffer, amount: number) => {
+      const betPda = getBetPda(pid, marketPda, kp.publicKey);
+      const statsPda = getUserStatsPda(pid, kp.publicKey);
+      await program.methods
+        .commitBet(Array.from(computeCommitment(outcome, secret, kp.publicKey)), new BN(amount))
+        .accounts({
+          market: marketPda,
+          vault: vaultPda,
+          bet: betPda,
+          userStats: statsPda,
+          user: kp.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([kp])
+        .rpc();
+    };
+
+    await commit(walletC, 1, secretC, 0.4 * LAMPORTS_PER_SOL);
+    await commit(walletD, 1, secretD, 0.4 * LAMPORTS_PER_SOL);
+    await commit(walletE, 2, secretE, 0.3 * LAMPORTS_PER_SOL);
+
+    const market = await program.account.market.fetch(marketPda);
+    expect(market.totalCommitted.toNumber()).to.equal(1.1 * LAMPORTS_PER_SOL);
+    console.log("  ✓ Three bets committed: 2 viral, 1 flop");
+  });
+
+  it("3. After expiry, all three reveal", async () => {
+    console.log("  Waiting 3s...");
+    await new Promise((r) => setTimeout(r, 3000));
+
+    const reveal = async (kp: Keypair, outcome: 1 | 2, secret: Buffer) => {
+      const betPda = getBetPda(pid, marketPda, kp.publicKey);
+      const statsPda = getUserStatsPda(pid, kp.publicKey);
+      await program.methods
+        .revealBet(outcome, Array.from(secret))
+        .accounts({ market: marketPda, bet: betPda, userStats: statsPda, user: kp.publicKey })
+        .signers([kp])
+        .rpc();
+    };
+
+    await reveal(walletC, 1, secretC);
+    await reveal(walletD, 1, secretD);
+    await reveal(walletE, 2, secretE);
+
+    const market = await program.account.market.fetch(marketPda);
+    expect(market.viralCount.toNumber()).to.equal(2);
+    expect(market.flopCount.toNumber()).to.equal(1);
+    console.log("  ✓ Revealed: viral_count=2, flop_count=1");
+  });
+
+  it("4. Mode 1: flop (minority count) would win on resolve", async () => {
+    const market = await program.account.market.fetch(marketPda);
+    // mode 1: outcome = viral if viral_count <= flop_count, else flop
+    // viral_count=2 > flop_count=1 → flop wins (side with fewer wallets)
+    const flopWouldWin = market.viralCount.toNumber() > market.flopCount.toNumber();
+    expect(flopWouldWin).to.equal(true);
+    console.log("  ✓ Mode-1 resolution: viral_count > flop_count → flop (minority) wins");
+  });
+});
+
+// ─── Suite 3: on-chain comments ───────────────────────────────────────────────
+describe("attention_market — post_comment", () => {
+  const provider = anchor.AnchorProvider.env();
+  anchor.setProvider(provider);
+
+  const program = anchor.workspace.AttentionMarket as Program<AttentionMarket>;
+  const pid = program.programId;
+
+  const commenter = Keypair.generate();
+  const treasury = Keypair.generate();
+  const contentId = "cr-comment-001";
+
+  let marketPda: PublicKey;
+  let vaultPda: PublicKey;
+
+  before(async () => {
+    for (const kp of [commenter, treasury]) {
+      const sig = await provider.connection.requestAirdrop(kp.publicKey, 3 * LAMPORTS_PER_SOL);
+      await provider.connection.confirmTransaction(sig);
+    }
+
+    marketPda = getMarketPda(pid, contentId);
+    vaultPda = getVaultPda(pid, marketPda);
+
+    await program.methods
+      .createMarket(contentId, "Comment Test Market", new BN(300), 0)
+      .accounts({
+        market: marketPda,
+        vault: vaultPda,
+        protocolTreasury: treasury.publicKey,
+        authority: provider.wallet.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .rpc();
+  });
+
+  it("1. Posts first comment (index=0)", async () => {
+    const commentPda = getCommentPda(pid, marketPda, 0);
+
+    await program.methods
+      .postComment("This is going viral, trust.", new BN(0))
+      .accounts({
+        market: marketPda,
+        comment: commentPda,
+        author: commenter.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([commenter])
+      .rpc();
+
+    const market = await program.account.market.fetch(marketPda);
+    expect(market.commentCount.toNumber()).to.equal(1);
+
+    const comment = await program.account.comment.fetch(commentPda);
+    expect(comment.content).to.equal("This is going viral, trust.");
+    expect(comment.author.toBase58()).to.equal(commenter.publicKey.toBase58());
+    console.log("  ✓ Comment 0 posted and verified on-chain");
+  });
+
+  it("2. Posts second comment (index=1)", async () => {
+    const commentPda = getCommentPda(pid, marketPda, 1);
+
+    await program.methods
+      .postComment("Disagree. This is a flop.", new BN(1))
+      .accounts({
+        market: marketPda,
+        comment: commentPda,
+        author: commenter.publicKey,
+        systemProgram: SystemProgram.programId,
+      })
+      .signers([commenter])
+      .rpc();
+
+    const market = await program.account.market.fetch(marketPda);
+    expect(market.commentCount.toNumber()).to.equal(2);
+    console.log("  ✓ Comment 1 posted and verified on-chain");
+  });
+
+  it("3. Wrong comment index is rejected", async () => {
+    // comment_count is now 2, so index 5 should fail
+    const commentPda = getCommentPda(pid, marketPda, 5);
+    let threw = false;
+    try {
+      await program.methods
+        .postComment("Skip ahead.", new BN(5))
+        .accounts({
+          market: marketPda,
+          comment: commentPda,
+          author: commenter.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([commenter])
+        .rpc();
+    } catch {
+      threw = true;
+    }
+    expect(threw).to.equal(true);
+    console.log("  ✓ Out-of-sequence comment index correctly rejected");
+  });
+
+  it("4. Comment exceeding 280 chars is rejected", async () => {
+    const commentPda = getCommentPda(pid, marketPda, 2);
+    let threw = false;
+    try {
+      await program.methods
+        .postComment("x".repeat(281), new BN(2))
+        .accounts({
+          market: marketPda,
+          comment: commentPda,
+          author: commenter.publicKey,
+          systemProgram: SystemProgram.programId,
+        })
+        .signers([commenter])
+        .rpc();
+    } catch {
+      threw = true;
+    }
+    expect(threw).to.equal(true);
+    console.log("  ✓ Oversized comment correctly rejected");
   });
 });

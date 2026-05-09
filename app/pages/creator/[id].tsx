@@ -10,6 +10,9 @@ interface Props {
   videos: VideoEntry[];
   crowdScore: number;
   history: { date: string; score: number }[];
+  totalEarned: number;
+  marketsCreated: number;
+  totalVolume: number;
 }
 
 // Mini SVG line chart
@@ -67,7 +70,7 @@ function LineChart({ data }: { data: { date: string; score: number }[] }) {
   );
 }
 
-const CreatorPage: NextPage<Props> = ({ creatorHandle, videos, crowdScore, history }) => {
+const CreatorPage: NextPage<Props> = ({ creatorHandle, videos, crowdScore, history, totalEarned, marketsCreated, totalVolume }) => {
   const lastScore = history[history.length - 1]?.score ?? 50;
   const prevScore = history[history.length - 2]?.score ?? lastScore;
   const trend = lastScore - prevScore;
@@ -145,6 +148,30 @@ const CreatorPage: NextPage<Props> = ({ creatorHandle, videos, crowdScore, histo
             </p>
           </motion.div>
 
+          {/* Creator stats row */}
+          <motion.div
+            initial={{ opacity: 0, y: 20 }}
+            animate={{ opacity: 1, y: 0 }}
+            transition={{ delay: 0.15 }}
+            className="grid grid-cols-3 gap-2 mb-5"
+          >
+            {[
+              { label: "Earned", value: `${totalEarned.toFixed(3)} SOL`, sub: "3% creator fee" },
+              { label: "Markets", value: String(marketsCreated), sub: "created" },
+              { label: "Volume", value: `${totalVolume.toFixed(2)} SOL`, sub: "total pot" },
+            ].map((stat) => (
+              <div
+                key={stat.label}
+                className="rounded-2xl p-3 text-center"
+                style={{ background: "#0a0a0a", border: "1px solid #1a1a1a" }}
+              >
+                <p className="text-xs text-white/40 mb-1">{stat.label}</p>
+                <p className="text-sm font-bold text-white leading-tight">{stat.value}</p>
+                <p className="text-xs text-white/25 mt-0.5">{stat.sub}</p>
+              </div>
+            ))}
+          </motion.div>
+
           {/* Chart */}
           <motion.div
             initial={{ opacity: 0, y: 20 }}
@@ -212,12 +239,21 @@ export const getServerSideProps: GetServerSideProps = async ({ params }) => {
   const history = getMockCreatorHistory(creatorHandle);
   const crowdScore = history[history.length - 1]?.score ?? 50;
 
+  // Deterministic mock creator stats (falls back from on-chain for demo)
+  const seed = creatorHandle.charCodeAt(1) % 10;
+  const marketsCreated = Math.max(1, videos.length);
+  const totalVolume = parseFloat((marketsCreated * (1.5 + seed * 0.4)).toFixed(2));
+  const totalEarned = parseFloat((totalVolume * 0.03).toFixed(4));
+
   return {
     props: {
       creatorHandle,
       videos,
       crowdScore,
       history,
+      totalEarned,
+      marketsCreated,
+      totalVolume,
     },
   };
 };
