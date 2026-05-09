@@ -68,6 +68,17 @@ export const CREATOR_VIDEOS: Record<string, VideoEntry[]> = {
   "@redpillweb3": [VIDEOS[5]],
 };
 
+// Map creator handle → their Solana wallet pubkey (devnet).
+// Replace values with real keypair pubkeys before mainnet launch.
+export const CREATOR_PUBKEYS: Record<string, string> = {
+  "@wavemakr":    "11111111111111111111111111111111",
+  "@cryptonative":"11111111111111111111111111111111",
+  "@tantasui":    "11111111111111111111111111111111",
+  "@crowdtheory": "11111111111111111111111111111111",
+  "@contrarian":  "11111111111111111111111111111111",
+  "@redpillweb3": "11111111111111111111111111111111",
+};
+
 export function getMockCreatorHistory(creator: string): { date: string; score: number }[] {
   const seed = creator.charCodeAt(1) % 10;
   return Array.from({ length: 12 }, (_, i) => ({

@@ -3,7 +3,7 @@ import Head from "next/head";
 import Link from "next/link";
 import { motion } from "framer-motion";
 import { WalletMultiButton } from "@solana/wallet-adapter-react-ui";
-import { VIDEOS, CREATOR_VIDEOS, getMockCreatorHistory, VideoEntry } from "../../lib/mockData";
+import { VIDEOS, CREATOR_VIDEOS, CREATOR_PUBKEYS, getMockCreatorHistory, VideoEntry } from "../../lib/mockData";
 
 interface Props {
   creatorHandle: string;
@@ -236,24 +236,64 @@ const CreatorPage: NextPage<Props> = ({ creatorHandle, videos, crowdScore, histo
 export const getServerSideProps: GetServerSideProps = async ({ params }) => {
   const creatorHandle = decodeURIComponent(params?.id as string);
   const videos = CREATOR_VIDEOS[creatorHandle] ?? VIDEOS.filter((v) => v.creator === creatorHandle);
-  const history = getMockCreatorHistory(creatorHandle);
-  const crowdScore = history[history.length - 1]?.score ?? 50;
 
-  // Deterministic mock creator stats (falls back from on-chain for demo)
+  // Deterministic mock stats — used when backend is unavailable or pubkey unknown
   const seed = creatorHandle.charCodeAt(1) % 10;
-  const marketsCreated = Math.max(1, videos.length);
-  const totalVolume = parseFloat((marketsCreated * (1.5 + seed * 0.4)).toFixed(2));
-  const totalEarned = parseFloat((totalVolume * 0.03).toFixed(4));
+  const mockHistory = getMockCreatorHistory(creatorHandle);
+  const mockMarketsCreated = Math.max(1, videos.length);
+  const mockTotalVolume = parseFloat((mockMarketsCreated * (1.5 + seed * 0.4)).toFixed(2));
+  const mockTotalEarned = parseFloat((mockTotalVolume * 0.03).toFixed(4));
+  const mockCrowdScore = mockHistory[mockHistory.length - 1]?.score ?? 50;
+
+  const pubkey = CREATOR_PUBKEYS[creatorHandle];
+  const backendUrl = process.env.BACKEND_URL;
+
+  if (pubkey && backendUrl) {
+    try {
+      const res = await fetch(`${backendUrl}/creator/${pubkey}`, { signal: AbortSignal.timeout(4000) });
+      if (res.ok) {
+        const data = await res.json();
+
+        // Transform DB snapshots → chart format; fall back to mock if no history yet
+        const history: { date: string; score: number }[] =
+          data.history?.length >= 2
+            ? data.history.map((row: { snappedAt: string; crowdScore: number | null }) => ({
+                date: new Date(row.snappedAt).toLocaleDateString("en-US", {
+                  month: "short",
+                  day: "numeric",
+                }),
+                score: row.crowdScore ?? 50,
+              }))
+            : mockHistory;
+
+        const crowdScore = history[history.length - 1]?.score ?? 50;
+
+        return {
+          props: {
+            creatorHandle,
+            videos,
+            crowdScore,
+            history,
+            totalEarned: data.totalEarned ?? mockTotalEarned,
+            marketsCreated: data.marketsCreated ?? mockMarketsCreated,
+            totalVolume: data.totalVolume ?? mockTotalVolume,
+          },
+        };
+      }
+    } catch {
+      // backend unavailable — fall through to mock
+    }
+  }
 
   return {
     props: {
       creatorHandle,
       videos,
-      crowdScore,
-      history,
-      totalEarned,
-      marketsCreated,
-      totalVolume,
+      crowdScore: mockCrowdScore,
+      history: mockHistory,
+      totalEarned: mockTotalEarned,
+      marketsCreated: mockMarketsCreated,
+      totalVolume: mockTotalVolume,
     },
   };
 };

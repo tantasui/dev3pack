@@ -7,7 +7,10 @@
     "test:program": "anchor test",
     "dev": "cd app && yarn dev",
     "build:app": "cd app && yarn build",
-    "airdrop": "ts-node scripts/airdrop.ts"
+    "airdrop": "ts-node scripts/airdrop.ts",
+    "dev:server": "cd server && bun run dev",
+    "start:server": "cd server && bun run start",
+    "db:push": "cd server && bun run db:push"
   },
   "devDependencies": {
     "@coral-xyz/anchor": "^0.29.0",

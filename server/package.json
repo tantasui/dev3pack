@@ -1,0 +1,24 @@
+{
+  "name": "crowdcast-server",
+  "version": "1.0.0",
+  "scripts": {
+    "dev": "bun --watch index.ts",
+    "start": "bun index.ts",
+    "db:push": "drizzle-kit push",
+    "db:generate": "drizzle-kit generate"
+  },
+  "dependencies": {
+    "@coral-xyz/anchor": "^0.29.0",
+    "@noble/hashes": "^1.3.3",
+    "@solana/web3.js": "^1.87.6",
+    "bs58": "^5.0.0",
+    "drizzle-orm": "^0.30.10",
+    "elysia": "^1.0.27",
+    "node-cron": "^3.0.3",
+    "postgres": "^3.4.4"
+  },
+  "devDependencies": {
+    "@types/node-cron": "^3.0.11",
+    "drizzle-kit": "^0.21.4"
+  }
+}
