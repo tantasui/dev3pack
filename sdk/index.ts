@@ -94,7 +94,7 @@ export const IDL: Idl = {
         { name: "vault", isMut: true, isSigner: false },
         { name: "bet", isMut: true, isSigner: false },
         { name: "userStats", isMut: true, isSigner: false },
-        { name: "user", isMut: true, isSigner: false },
+        { name: "user", isMut: true, isSigner: true },
       ],
       args: [],
     },

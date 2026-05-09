@@ -1,5 +1,6 @@
 use anchor_lang::prelude::*;
-use anchor_lang::solana_program::{keccak, system_program};
+use anchor_lang::solana_program::keccak;
+use anchor_lang::system_program::{self, Transfer};
 
 declare_id!("Fg6PaFpoGXkYsidMpWTK6W2BeZ7FEfcYkg476zPFsLnS");
 
@@ -70,7 +71,7 @@ pub mod attention_market {
         );
 
         // SOL to vault
-        let cpi_accounts = system_program::Transfer {
+        let cpi_accounts = Transfer {
             from: ctx.accounts.user.to_account_info(),
             to: ctx.accounts.vault.to_account_info(),
         };
@@ -227,6 +228,9 @@ pub mod attention_market {
             .and_then(|v| v.checked_sub(creator_cut))
             .ok_or(MarketError::Overflow)?;
 
+        let vault_lamports = ctx.accounts.vault.to_account_info().lamports();
+        require!(vault_lamports >= protocol_cut + creator_cut, MarketError::InsufficientFunds);
+
         **ctx.accounts.vault.to_account_info().try_borrow_mut_lamports()? -= protocol_cut + creator_cut;
         **ctx.accounts.protocol_treasury.to_account_info().try_borrow_mut_lamports()? += protocol_cut;
         **ctx.accounts.creator.to_account_info().try_borrow_mut_lamports()? += creator_cut;
@@ -273,9 +277,9 @@ pub mod attention_market {
             base
         };
 
-        // Cap at vault balance
         let vault_balance = ctx.accounts.vault.to_account_info().lamports();
-        let payout = raw_payout.min(vault_balance);
+        require!(raw_payout <= vault_balance, MarketError::InsufficientFunds);
+        let payout = raw_payout;
 
         **ctx.accounts.vault.to_account_info().try_borrow_mut_lamports()? -= payout;
         **ctx.accounts.user.to_account_info().try_borrow_mut_lamports()? += payout;
@@ -299,6 +303,7 @@ pub mod attention_market {
         content: String,
         comment_index: u64,
     ) -> Result<()> {
+        require!(!content.is_empty(), MarketError::CommentEmpty);
         require!(content.len() <= 280, MarketError::CommentTooLong);
         require!(
             comment_index == ctx.accounts.market.comment_count,
@@ -487,9 +492,8 @@ pub struct ClaimWinnings<'info> {
     )]
     pub user_stats: Account<'info, UserStats>,
 
-    /// CHECK: Receives winnings
     #[account(mut)]
-    pub user: AccountInfo<'info>,
+    pub user: Signer<'info>,
 }
 
 #[derive(Accounts)]
@@ -684,4 +688,8 @@ pub enum MarketError {
     TreasuryMismatch,
     #[msg("Creator account does not match market record")]
     CreatorMismatch,
+    #[msg("Vault has insufficient balance for payout or fee extraction")]
+    InsufficientFunds,
+    #[msg("Comment content cannot be empty")]
+    CommentEmpty,
 }
